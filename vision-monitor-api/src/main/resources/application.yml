@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: vision-monitor-api
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/test?useSSL=false&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true
+    username: jho
+    password: 1234
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
+        use_sql_comments: true
+
+server:
+  address: 0.0.0.0  # 모든 네트워크 인터페이스에서 접근 허용
+  port: 8081
+  servlet:
+    context-path: /
+
+# JWT 설정
+jwt:
+  secret: VisionMonitorSecretKeyForJWTTokenGeneration2024!@#$%^&*()
+  expiration: 86400000  # 24시간 (밀리초)
+
+# 로깅
+logging:
+  level:
+    root: INFO
+    com.smartfactory.visionmonitor: DEBUG
+    org.springframework.security: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
