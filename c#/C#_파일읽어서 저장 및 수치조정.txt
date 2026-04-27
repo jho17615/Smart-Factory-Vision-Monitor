@@ -1,0 +1,923 @@
+using System;
+using System.Windows.Forms;
+using System.Drawing;
+using System.IO;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using MySql.Data.MySqlClient;
+using System.Text;
+using System.Linq;
+
+namespace NumericAdjuster
+{
+    // 한 행의 모든 VERTICAL 측정값 저장용 모델
+    public class MeasurementRecord
+    {
+        public int RowIndex { get; set; }
+        public decimal? VerticalNum { get; set; }
+        public decimal? VerticalUpperDiameter1 { get; set; }
+        public decimal? VerticalUpperDiameter2 { get; set; }
+        public decimal? VerticalUpperDiameter3 { get; set; }
+        public decimal? VerticalUpperDiameterAvg { get; set; }
+        public decimal? VerticalLowerDiameter1 { get; set; }
+        public decimal? VerticalLowerDiameter2 { get; set; }
+        public decimal? VerticalLeftLength1 { get; set; }
+        public decimal? VerticalLeftLength2 { get; set; }
+        public decimal? VerticalRightLength1 { get; set; }
+        public decimal? VerticalRightLength2 { get; set; }
+        public decimal? VerticalLeftRoundness1 { get; set; }
+        public decimal? VerticalLeftRoundness2 { get; set; }
+        public decimal? VerticalRightRoundness1 { get; set; }
+        public decimal? VerticalRightRoundness2 { get; set; }
+        public decimal? VerticalLeftAngle1 { get; set; }
+        public decimal? VerticalLeftAngle2 { get; set; }
+        public decimal? VerticalRightAngle1 { get; set; }
+        public decimal? VerticalRightAngle2 { get; set; }
+    }
+
+    public class NumericAdjusterForm : Form
+    {
+        // 수치 조정 컨트롤 (상한치/하한치)
+        private NumericUpDown upperLimitUpDown;
+        private NumericUpDown lowerLimitUpDown;
+        private Label upperLimitLabel;
+        private Label lowerLimitLabel;
+        private ComboBox columnSelectionComboBox;
+        private Button calculateYieldButton;
+        
+        // CSV Import 컨트롤
+        private Button importCsvButton;
+        private ProgressBar progressBar;
+        private Label statusLabel;
+        
+        // 공통 결과 출력
+        private TextBox resultTextBox;
+        
+        // 구분선
+        private Label separatorLabel;
+        
+        private string connectionString = "Server=127.0.0.1;Port=3306;Database=test;Uid=jho;Pwd=1234;";
+        private string connectionStringWithoutDB = "Server=127.0.0.1;Port=3306;Uid=jho;Pwd=1234;";
+        
+        private CancellationTokenSource cancellationTokenSource;
+        private bool isImporting = false;
+
+        // 18개 칼럼 매핑
+        private Dictionary<string, string> columnDisplayNames = new Dictionary<string, string>
+        {
+            { "vertical_num", "VERTICAL_NUM" },
+            { "vertical_upper_diameter_1", "VERTICAL_UPPER_DIAMETER_1" },
+            { "vertical_upper_diameter_2", "VERTICAL_UPPER_DIAMETER_2" },
+            { "vertical_upper_diameter_avg", "VERTICAL_UPPER_DIAMETER_AVG" },
+            { "vertical_lower_diameter_1", "VERTICAL_LOWER_DIAMETER_1" },
+            { "vertical_lower_diameter_2", "VERTICAL_LOWER_DIAMETER_2" },
+            { "vertical_left_length_1", "VERTICAL_LEFT_LENGTH_1" },
+            { "vertical_left_length_2", "VERTICAL_LEFT_LENGTH_2" },
+            { "vertical_right_length_1", "VERTICAL_RIGHT_LENGTH_1" },
+            { "vertical_right_length_2", "VERTICAL_RIGHT_LENGTH_2" },
+            { "vertical_left_roundness_1", "VERTICAL_LEFT_ROUNDNESS_1" },
+            { "vertical_left_roundness_2", "VERTICAL_LEFT_ROUNDNESS_2" },
+            { "vertical_right_roundness_1", "VERTICAL_RIGHT_ROUNDNESS_1" },
+            { "vertical_right_roundness_2", "VERTICAL_RIGHT_ROUNDNESS_2" },
+            { "vertical_left_angle_1", "VERTICAL_LEFT_ANGLE_1" },
+            { "vertical_left_angle_2", "VERTICAL_LEFT_ANGLE_2" },
+            { "vertical_right_angle_1", "VERTICAL_RIGHT_ANGLE_1" },
+            { "vertical_right_angle_2", "VERTICAL_RIGHT_ANGLE_2" }
+        };
+
+        public NumericAdjusterForm()
+        {
+            InitializeComponents();
+            TestDatabaseConnection();
+        }
+
+        private void InitializeComponents()
+        {
+            this.Text = "Vision Monitor - 수율 분석 + CSV Import";
+            this.Size = new Size(700, 750);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.BackColor = Color.WhiteSmoke;
+
+            // ===== 수율 분석 섹션 =====
+            Label section1Label = new Label
+            {
+                Location = new Point(30, 10),
+                Size = new Size(620, 25),
+                Text = "[ 수율 분석 - 상한치/하한치 설정 ]",
+                Font = new Font("맑은 고딕", 11, FontStyle.Bold),
+                ForeColor = Color.FromArgb(46, 78, 121)
+            };
+
+            // 칼럼 선택
+            Label columnLabel = new Label
+            {
+                Location = new Point(30, 45),
+                Size = new Size(120, 25),
+                Text = "분석 항목:",
+                Font = new Font("맑은 고딕", 10, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            columnSelectionComboBox = new ComboBox
+            {
+                Location = new Point(150, 45),
+                Size = new Size(480, 30),
+                Font = new Font("맑은 고딕", 10),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            
+            foreach (var item in columnDisplayNames)
+            {
+                columnSelectionComboBox.Items.Add(item.Value);
+            }
+            columnSelectionComboBox.SelectedIndex = 0;
+
+            // 상한치
+            upperLimitLabel = new Label
+            {
+                Location = new Point(30, 90),
+                Size = new Size(120, 25),
+                Text = "상한치 (Upper):",
+                Font = new Font("맑은 고딕", 10, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            upperLimitUpDown = new NumericUpDown
+            {
+                Location = new Point(150, 90),
+                Size = new Size(180, 30),
+                Minimum = -1000,
+                Maximum = 1000,
+                Value = 100,
+                DecimalPlaces = 3,
+                Increment = 0.1m,
+                Font = new Font("맑은 고딕", 11)
+            };
+
+            // 하한치
+            lowerLimitLabel = new Label
+            {
+                Location = new Point(30, 135),
+                Size = new Size(120, 25),
+                Text = "하한치 (Lower):",
+                Font = new Font("맑은 고딕", 10, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            lowerLimitUpDown = new NumericUpDown
+            {
+                Location = new Point(150, 135),
+                Size = new Size(180, 30),
+                Minimum = -1000,
+                Maximum = 1000,
+                Value = 0,
+                DecimalPlaces = 3,
+                Increment = 0.1m,
+                Font = new Font("맑은 고딕", 11)
+            };
+
+            // 수율 계산 버튼
+            calculateYieldButton = new Button
+            {
+                Location = new Point(360, 90),
+                Size = new Size(270, 75),
+                Text = "수율 계산 및 DB 저장\n(OK/NG 판정)",
+                Font = new Font("맑은 고딕", 11, FontStyle.Bold),
+                BackColor = Color.FromArgb(100, 149, 237),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            calculateYieldButton.FlatAppearance.BorderSize = 0;
+            calculateYieldButton.Click += CalculateYieldButton_Click;
+
+            // 구분선
+            separatorLabel = new Label
+            {
+                Location = new Point(30, 185),
+                Size = new Size(620, 2),
+                BorderStyle = BorderStyle.Fixed3D
+            };
+
+            // ===== CSV Import 섹션 =====
+            Label section2Label = new Label
+            {
+                Location = new Point(30, 200),
+                Size = new Size(620, 25),
+                Text = "[ CSV 대량 임포트 (18개 칼럼) ]",
+                Font = new Font("맑은 고딕", 11, FontStyle.Bold),
+                ForeColor = Color.FromArgb(46, 78, 121)
+            };
+
+            importCsvButton = new Button
+            {
+                Location = new Point(30, 235),
+                Size = new Size(250, 50),
+                Text = "CSV 가져오기 (18개 칼럼)",
+                Font = new Font("맑은 고딕", 11, FontStyle.Bold),
+                BackColor = Color.FromArgb(144, 238, 144),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            importCsvButton.FlatAppearance.BorderSize = 0;
+            importCsvButton.Click += ImportCsvButton_Click;
+
+            progressBar = new ProgressBar
+            {
+                Location = new Point(300, 235),
+                Size = new Size(330, 25),
+                Visible = false
+            };
+
+            statusLabel = new Label
+            {
+                Location = new Point(300, 265),
+                Size = new Size(330, 20),
+                Text = "",
+                Font = new Font("맑은 고딕", 9),
+                ForeColor = Color.DarkGreen,
+                Visible = false
+            };
+
+            // 공통 결과 출력 텍스트박스
+            resultTextBox = new TextBox
+            {
+                Location = new Point(30, 305),
+                Size = new Size(620, 390),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                Font = new Font("맑은 고딕", 9),
+                Text = "=== Vision Monitor 수율 분석 시스템 ===\r\n\r\n" +
+                       "[수율 분석] 항목을 선택하고 상한치/하한치를 설정한 후 '수율 계산' 버튼을 누르세요.\r\n" +
+                       "[CSV Import] CSV 파일의 18개 VERTICAL 항목을 개별 칼럼으로 DB에 저장합니다.",
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            this.Controls.Add(section1Label);
+            this.Controls.Add(columnLabel);
+            this.Controls.Add(columnSelectionComboBox);
+            this.Controls.Add(upperLimitLabel);
+            this.Controls.Add(upperLimitUpDown);
+            this.Controls.Add(lowerLimitLabel);
+            this.Controls.Add(lowerLimitUpDown);
+            this.Controls.Add(calculateYieldButton);
+            this.Controls.Add(separatorLabel);
+            this.Controls.Add(section2Label);
+            this.Controls.Add(importCsvButton);
+            this.Controls.Add(progressBar);
+            this.Controls.Add(statusLabel);
+            this.Controls.Add(resultTextBox);
+        }
+
+        private void TestDatabaseConnection()
+        {
+            try
+            {
+                CreateDatabaseIfNotExists();
+                
+                using (MySqlConnection connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+                    Console.WriteLine("=========================================");
+                    Console.WriteLine("[DB] MySQL Connection Success!");
+                    Console.WriteLine($"Server: 127.0.0.1:3306");
+                    Console.WriteLine($"Database: test");
+                    Console.WriteLine("=========================================");
+                    
+                    CreateTablesIfNotExists(connection);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("=========================================");
+                Console.WriteLine("[DB ERROR] MySQL Connection Failed!");
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine("=========================================");
+                
+                MessageBox.Show($"데이터베이스 연결 실패!\n\n{ex.Message}", 
+                              "DB 연결 오류", 
+                              MessageBoxButtons.OK, 
+                              MessageBoxIcon.Error);
+            }
+        }
+
+        private void CreateDatabaseIfNotExists()
+        {
+            try
+            {
+                using (MySqlConnection connection = new MySqlConnection(connectionStringWithoutDB))
+                {
+                    connection.Open();
+                    
+                    string createDbQuery = "CREATE DATABASE IF NOT EXISTS test";
+                    using (MySqlCommand cmd = new MySqlCommand(createDbQuery, connection))
+                    {
+                        cmd.ExecuteNonQuery();
+                        Console.WriteLine("[DB] Database 'test' created/verified");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DB WARNING] Database creation failed: {ex.Message}");
+            }
+        }
+
+        private void CreateTablesIfNotExists(MySqlConnection connection)
+        {
+            // 1. vertical_measurements 테이블 (18개 칼럼 저장용)
+            string dropTable1Query = "DROP TABLE IF EXISTS vertical_measurements";
+            using (MySqlCommand cmd = new MySqlCommand(dropTable1Query, connection))
+            {
+                cmd.ExecuteNonQuery();
+            }
+
+            string createTable1Query = @"
+                CREATE TABLE vertical_measurements (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    row_index INT NOT NULL,
+                    vertical_num DECIMAL(10, 3),
+                    vertical_upper_diameter_1 DECIMAL(10, 3),
+                    vertical_upper_diameter_2 DECIMAL(10, 3),
+                    vertical_upper_diameter_avg DECIMAL(10, 3),
+                    vertical_lower_diameter_1 DECIMAL(10, 3),
+                    vertical_lower_diameter_2 DECIMAL(10, 3),
+                    vertical_left_length_1 DECIMAL(10, 3),
+                    vertical_left_length_2 DECIMAL(10, 3),
+                    vertical_right_length_1 DECIMAL(10, 3),
+                    vertical_right_length_2 DECIMAL(10, 3),
+                    vertical_left_roundness_1 DECIMAL(10, 3),
+                    vertical_left_roundness_2 DECIMAL(10, 3),
+                    vertical_right_roundness_1 DECIMAL(10, 3),
+                    vertical_right_roundness_2 DECIMAL(10, 3),
+                    vertical_left_angle_1 DECIMAL(10, 3),
+                    vertical_left_angle_2 DECIMAL(10, 3),
+                    vertical_right_angle_1 DECIMAL(10, 3),
+                    vertical_right_angle_2 DECIMAL(10, 3),
+                    created_at DATETIME NOT NULL,
+                    INDEX idx_row_index (row_index)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            ";
+
+            using (MySqlCommand cmd = new MySqlCommand(createTable1Query, connection))
+            {
+                cmd.ExecuteNonQuery();
+                Console.WriteLine("[DB] Table 'vertical_measurements' created with 18 columns");
+            }
+
+            // 2. yield_analysis 테이블 (수율 분석 결과 저장용)
+            string dropTable2Query = "DROP TABLE IF EXISTS yield_analysis";
+            using (MySqlCommand cmd = new MySqlCommand(dropTable2Query, connection))
+            {
+                cmd.ExecuteNonQuery();
+            }
+
+            string createTable2Query = @"
+                CREATE TABLE yield_analysis (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    column_name VARCHAR(100) NOT NULL,
+                    upper_limit DECIMAL(10, 3) NOT NULL,
+                    lower_limit DECIMAL(10, 3) NOT NULL,
+                    total_count INT NOT NULL,
+                    ok_count INT NOT NULL,
+                    ng_count INT NOT NULL,
+                    yield_rate DECIMAL(5, 2) NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    INDEX idx_column_name (column_name),
+                    INDEX idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            ";
+
+            using (MySqlCommand cmd = new MySqlCommand(createTable2Query, connection))
+            {
+                cmd.ExecuteNonQuery();
+                Console.WriteLine("[DB] Table 'yield_analysis' created");
+            }
+        }
+
+        // ===== 수율 계산 기능 =====
+        private void CalculateYieldButton_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string selectedDisplay = columnSelectionComboBox.SelectedItem.ToString();
+                string selectedColumn = columnDisplayNames.FirstOrDefault(x => x.Value == selectedDisplay).Key;
+                
+                decimal upperLimit = upperLimitUpDown.Value;
+                decimal lowerLimit = lowerLimitUpDown.Value;
+
+                if (upperLimit <= lowerLimit)
+                {
+                    MessageBox.Show("상한치는 하한치보다 커야 합니다!", "입력 오류", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // DB에서 데이터 조회
+                int totalCount = 0;
+                int okCount = 0;
+                int ngCount = 0;
+
+                using (MySqlConnection connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    string query = $"SELECT {selectedColumn} FROM vertical_measurements WHERE {selectedColumn} IS NOT NULL";
+                    
+                    using (MySqlCommand cmd = new MySqlCommand(query, connection))
+                    {
+                        using (MySqlDataReader reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                totalCount++;
+                                decimal value = reader.GetDecimal(0);
+                                
+                                if (value >= lowerLimit && value <= upperLimit)
+                                {
+                                    okCount++;
+                                }
+                                else
+                                {
+                                    ngCount++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (totalCount == 0)
+                {
+                    MessageBox.Show("분석할 데이터가 없습니다. 먼저 CSV를 임포트하세요.", "데이터 없음", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                decimal yieldRate = (decimal)okCount / totalCount * 100;
+
+                // DB에 수율 결과 저장
+                SaveYieldAnalysisToDatabase(selectedColumn, upperLimit, lowerLimit, totalCount, okCount, ngCount, yieldRate);
+
+                // 결과 출력
+                string result = $"\r\n========== 수율 분석 결과 ==========\r\n" +
+                               $"항목: {selectedDisplay}\r\n" +
+                               $"상한치: {upperLimit:F3} / 하한치: {lowerLimit:F3}\r\n" +
+                               $"총 개수: {totalCount}개\r\n" +
+                               $"OK: {okCount}개\r\n" +
+                               $"NG: {ngCount}개\r\n" +
+                               $"수율: {yieldRate:F2}%\r\n" +
+                               $"분석 시간: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n" +
+                               $"====================================";
+
+                resultTextBox.AppendText(result);
+
+                Console.WriteLine("=========================================");
+                Console.WriteLine($"[YIELD ANALYSIS] {selectedDisplay}");
+                Console.WriteLine($"Upper: {upperLimit:F3} / Lower: {lowerLimit:F3}");
+                Console.WriteLine($"Total: {totalCount} | OK: {okCount} | NG: {ngCount}");
+                Console.WriteLine($"Yield: {yieldRate:F2}%");
+                Console.WriteLine("=========================================");
+
+                MessageBox.Show($"수율 분석 완료!\n\n총: {totalCount}개\nOK: {okCount}개\nNG: {ngCount}개\n수율: {yieldRate:F2}%", 
+                              "분석 완료", 
+                              MessageBoxButtons.OK, 
+                              MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] Yield calculation failed: {ex.Message}");
+                MessageBox.Show($"수율 계산 오류!\n\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void SaveYieldAnalysisToDatabase(string columnName, decimal upperLimit, decimal lowerLimit, 
+                                                 int totalCount, int okCount, int ngCount, decimal yieldRate)
+        {
+            try
+            {
+                using (MySqlConnection connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    string query = @"
+                        INSERT INTO yield_analysis (
+                            column_name, upper_limit, lower_limit, total_count, 
+                            ok_count, ng_count, yield_rate, created_at
+                        ) VALUES (
+                            @column_name, @upper_limit, @lower_limit, @total_count, 
+                            @ok_count, @ng_count, @yield_rate, @created_at
+                        )
+                    ";
+
+                    using (MySqlCommand cmd = new MySqlCommand(query, connection))
+                    {
+                        cmd.Parameters.AddWithValue("@column_name", columnName);
+                        cmd.Parameters.AddWithValue("@upper_limit", upperLimit);
+                        cmd.Parameters.AddWithValue("@lower_limit", lowerLimit);
+                        cmd.Parameters.AddWithValue("@total_count", totalCount);
+                        cmd.Parameters.AddWithValue("@ok_count", okCount);
+                        cmd.Parameters.AddWithValue("@ng_count", ngCount);
+                        cmd.Parameters.AddWithValue("@yield_rate", yieldRate);
+                        cmd.Parameters.AddWithValue("@created_at", DateTime.Now);
+                        
+                        cmd.ExecuteNonQuery();
+                        
+                        Console.WriteLine("[DB SAVE] Yield analysis saved successfully");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DB ERROR] Yield analysis save failed: {ex.Message}");
+            }
+        }
+
+        // ===== CSV Import 기능 =====
+        private void ImportCsvButton_Click(object sender, EventArgs e)
+        {
+            if (isImporting)
+            {
+                cancellationTokenSource?.Cancel();
+                return;
+            }
+
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*",
+                Title = "Select CSV File"
+            };
+
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                string filePath = openFileDialog.FileName;
+                ImportCsvFile(filePath);
+            }
+        }
+
+        private async void ImportCsvFile(string filePath)
+        {
+            try
+            {
+                List<MeasurementRecord> records = ReadCsvAndConvertToRecords(filePath);
+                
+                if (records.Count == 0)
+                {
+                    MessageBox.Show("CSV 파일에서 유효한 데이터를 찾을 수 없습니다.", 
+                                  "오류", 
+                                  MessageBoxButtons.OK, 
+                                  MessageBoxIcon.Warning);
+                    return;
+                }
+
+                isImporting = true;
+                importCsvButton.Text = "취소";
+                importCsvButton.BackColor = Color.FromArgb(255, 160, 122);
+                progressBar.Visible = true;
+                progressBar.Maximum = records.Count;
+                progressBar.Value = 0;
+                statusLabel.Visible = true;
+
+                string logMessage = $"[{DateTime.Now:HH:mm:ss}] 총 {records.Count}개 행 로드 완료 (각 행당 18개 칼럼)";
+                resultTextBox.AppendText($"\r\n{logMessage}");
+                Console.WriteLine($"[CSV] Total {records.Count} rows loaded (18 columns each)");
+
+                cancellationTokenSource = new CancellationTokenSource();
+                var token = cancellationTokenSource.Token;
+
+                int delayMs = 600;
+                int savedCount = 0;
+                int failedCount = 0;
+
+                foreach (var record in records)
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        resultTextBox.AppendText($"\r\n[{DateTime.Now:HH:mm:ss}] 취소됨 ({savedCount}개 저장)");
+                        break;
+                    }
+
+                    bool success = SaveMeasurementToDatabase(record);
+                    
+                    if (success)
+                        savedCount++;
+                    else
+                        failedCount++;
+
+                    progressBar.Value = savedCount + failedCount;
+                    statusLabel.Text = $"진행: {savedCount + failedCount}/{records.Count} (성공: {savedCount}, 실패: {failedCount})";
+
+                    await Task.Delay(delayMs, token);
+                }
+
+                string completeMessage = $"[{DateTime.Now:HH:mm:ss}] 완료 - 성공: {savedCount}, 실패: {failedCount}";
+                resultTextBox.AppendText($"\r\n{completeMessage}");
+                Console.WriteLine("=========================================");
+                Console.WriteLine($"[IMPORT COMPLETE]");
+                Console.WriteLine($"Total: {records.Count} rows | Saved: {savedCount} | Failed: {failedCount}");
+                Console.WriteLine("=========================================");
+
+                MessageBox.Show($"임포트 완료!\n\n총: {records.Count}개 행\n성공: {savedCount}개\n실패: {failedCount}개", 
+                              "완료", 
+                              MessageBoxButtons.OK, 
+                              MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] {ex.Message}");
+                Console.WriteLine($"[ERROR] Stack: {ex.StackTrace}");
+                MessageBox.Show($"오류 발생!\n\n{ex.Message}", 
+                              "오류", 
+                              MessageBoxButtons.OK, 
+                              MessageBoxIcon.Error);
+            }
+            finally
+            {
+                isImporting = false;
+                importCsvButton.Text = "CSV 가져오기 (18개 칼럼)";
+                importCsvButton.BackColor = Color.FromArgb(144, 238, 144);
+                progressBar.Visible = false;
+                statusLabel.Visible = false;
+            }
+        }
+
+        private bool SaveMeasurementToDatabase(MeasurementRecord record)
+        {
+            try
+            {
+                using (MySqlConnection connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    string query = @"
+                        INSERT INTO vertical_measurements (
+                            row_index, vertical_num, vertical_upper_diameter_1, vertical_upper_diameter_2, 
+                            vertical_upper_diameter_avg, vertical_lower_diameter_1, vertical_lower_diameter_2,
+                            vertical_left_length_1, vertical_left_length_2, vertical_right_length_1, 
+                            vertical_right_length_2, vertical_left_roundness_1, vertical_left_roundness_2,
+                            vertical_right_roundness_1, vertical_right_roundness_2, vertical_left_angle_1, 
+                            vertical_left_angle_2, vertical_right_angle_1, vertical_right_angle_2, created_at
+                        ) VALUES (
+                            @row_index, @vertical_num, @vertical_upper_diameter_1, @vertical_upper_diameter_2, 
+                            @vertical_upper_diameter_avg, @vertical_lower_diameter_1, @vertical_lower_diameter_2,
+                            @vertical_left_length_1, @vertical_left_length_2, @vertical_right_length_1, 
+                            @vertical_right_length_2, @vertical_left_roundness_1, @vertical_left_roundness_2,
+                            @vertical_right_roundness_1, @vertical_right_roundness_2, @vertical_left_angle_1, 
+                            @vertical_left_angle_2, @vertical_right_angle_1, @vertical_right_angle_2, @created_at
+                        )
+                    ";
+
+                    using (MySqlCommand cmd = new MySqlCommand(query, connection))
+                    {
+                        cmd.Parameters.AddWithValue("@row_index", record.RowIndex);
+                        cmd.Parameters.AddWithValue("@vertical_num", (object)record.VerticalNum ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_upper_diameter_1", (object)record.VerticalUpperDiameter1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_upper_diameter_2", (object)record.VerticalUpperDiameter2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_upper_diameter_avg", (object)record.VerticalUpperDiameterAvg ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_lower_diameter_1", (object)record.VerticalLowerDiameter1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_lower_diameter_2", (object)record.VerticalLowerDiameter2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_left_length_1", (object)record.VerticalLeftLength1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_left_length_2", (object)record.VerticalLeftLength2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_right_length_1", (object)record.VerticalRightLength1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_right_length_2", (object)record.VerticalRightLength2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_left_roundness_1", (object)record.VerticalLeftRoundness1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_left_roundness_2", (object)record.VerticalLeftRoundness2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_right_roundness_1", (object)record.VerticalRightRoundness1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_right_roundness_2", (object)record.VerticalRightRoundness2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_left_angle_1", (object)record.VerticalLeftAngle1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_left_angle_2", (object)record.VerticalLeftAngle2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_right_angle_1", (object)record.VerticalRightAngle1 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@vertical_right_angle_2", (object)record.VerticalRightAngle2 ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@created_at", DateTime.Now);
+                        
+                        int rowsAffected = cmd.ExecuteNonQuery();
+                        
+                        Console.WriteLine($"[DB SAVE] Row {record.RowIndex} → NUM:{record.VerticalNum}, UD1:{record.VerticalUpperDiameter1}");
+                        
+                        return rowsAffected > 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DB ERROR] Row {record.RowIndex} → FAILED: {ex.Message}");
+                return false;
+            }
+        }
+
+        private List<MeasurementRecord> ReadCsvAndConvertToRecords(string filePath)
+        {
+            List<MeasurementRecord> records = new List<MeasurementRecord>();
+            
+            try
+            {
+                string csvContent = File.ReadAllText(filePath, Encoding.UTF8);
+                List<string[]> csvData = ParseCsv(csvContent);
+                
+                Console.WriteLine($"[CSV] Total rows parsed: {csvData.Count}");
+                
+                if (csvData.Count == 0)
+                    return records;
+
+                string[] headers = csvData[0];
+                Dictionary<string, int> columnMap = new Dictionary<string, int>();
+
+                Console.WriteLine("[CSV] Column mapping for VERTICAL fields:");
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    string header = headers[i].Trim().ToUpper();
+                    
+                    if (!columnMap.ContainsKey(header))
+                    {
+                        columnMap[header] = i;
+                        if (header.StartsWith("VERTICAL_"))
+                        {
+                            Console.WriteLine($"  Column[{i}] = {header}");
+                        }
+                    }
+                }
+
+                for (int rowIndex = 1; rowIndex < csvData.Count; rowIndex++)
+                {
+                    string[] columns = csvData[rowIndex];
+                    
+                    if (columns.Length == 0)
+                        continue;
+
+                    MeasurementRecord record = new MeasurementRecord
+                    {
+                        RowIndex = rowIndex,
+                        VerticalNum = GetDecimalValue(columns, columnMap, "VERTICAL_NUM"),
+                        VerticalUpperDiameter1 = GetDecimalValue(columns, columnMap, "VERTICAL_UPPER_DIAMETER_1"),
+                        VerticalUpperDiameter2 = GetDecimalValue(columns, columnMap, "VERTICAL_UPPER_DIAMETER_2"),
+                        VerticalUpperDiameterAvg = GetDecimalValue(columns, columnMap, "VERTICAL_UPPER_DIAMETER_AVG"),
+                        VerticalLowerDiameter1 = GetDecimalValue(columns, columnMap, "VERTICAL_LOWER_DIAMETER_1"),
+                        VerticalLowerDiameter2 = GetDecimalValue(columns, columnMap, "VERTICAL_LOWER_DIAMETER_2"),
+                        VerticalLeftLength1 = GetDecimalValue(columns, columnMap, "VERTICAL_LEFT_LENGTH_1"),
+                        VerticalLeftLength2 = GetDecimalValue(columns, columnMap, "VERTICAL_LEFT_LENGTH_2"),
+                        VerticalRightLength1 = GetDecimalValue(columns, columnMap, "VERTICAL_RIGHT_LENGTH_1"),
+                        VerticalRightLength2 = GetDecimalValue(columns, columnMap, "VERTICAL_RIGHT_LENGTH_2"),
+                        VerticalLeftRoundness1 = GetDecimalValue(columns, columnMap, "VERTICAL_LEFT_ROUNDNESS_1"),
+                        VerticalLeftRoundness2 = GetDecimalValue(columns, columnMap, "VERTICAL_LEFT_ROUNDNESS_2"),
+                        VerticalRightRoundness1 = GetDecimalValue(columns, columnMap, "VERTICAL_RIGHT_ROUNDNESS_1"),
+                        VerticalRightRoundness2 = GetDecimalValue(columns, columnMap, "VERTICAL_RIGHT_ROUNDNESS_2"),
+                        VerticalLeftAngle1 = GetDecimalValue(columns, columnMap, "VERTICAL_LEFT_ANGLE_1"),
+                        VerticalLeftAngle2 = GetDecimalValue(columns, columnMap, "VERTICAL_LEFT_ANGLE_2"),
+                        VerticalRightAngle1 = GetDecimalValue(columns, columnMap, "VERTICAL_RIGHT_ANGLE_1"),
+                        VerticalRightAngle2 = GetDecimalValue(columns, columnMap, "VERTICAL_RIGHT_ANGLE_2")
+                    };
+
+                    records.Add(record);
+                }
+
+                Console.WriteLine($"[CSV] {records.Count} records created from {csvData.Count - 1} data rows");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CSV ERROR] {ex.Message}");
+                Console.WriteLine($"[CSV ERROR] Stack: {ex.StackTrace}");
+            }
+
+            return records;
+        }
+
+        private List<string[]> ParseCsv(string csvContent)
+        {
+            List<string[]> rows = new List<string[]>();
+            List<string> currentRow = new List<string>();
+            StringBuilder currentField = new StringBuilder();
+            bool inQuotes = false;
+            
+            for (int i = 0; i < csvContent.Length; i++)
+            {
+                char c = csvContent[i];
+                char nextChar = (i + 1 < csvContent.Length) ? csvContent[i + 1] : '\0';
+                
+                if (inQuotes)
+                {
+                    if (c == '"')
+                    {
+                        if (nextChar == '"')
+                        {
+                            currentField.Append('"');
+                            i++;
+                        }
+                        else
+                        {
+                            inQuotes = false;
+                        }
+                    }
+                    else
+                    {
+                        currentField.Append(c);
+                    }
+                }
+                else
+                {
+                    if (c == '"')
+                    {
+                        inQuotes = true;
+                    }
+                    else if (c == ',')
+                    {
+                        currentRow.Add(currentField.ToString());
+                        currentField.Clear();
+                    }
+                    else if (c == '\r' && nextChar == '\n')
+                    {
+                        currentRow.Add(currentField.ToString());
+                        currentField.Clear();
+                        rows.Add(currentRow.ToArray());
+                        currentRow.Clear();
+                        i++;
+                    }
+                    else if (c == '\n')
+                    {
+                        currentRow.Add(currentField.ToString());
+                        currentField.Clear();
+                        rows.Add(currentRow.ToArray());
+                        currentRow.Clear();
+                    }
+                    else
+                    {
+                        currentField.Append(c);
+                    }
+                }
+            }
+            
+            if (currentField.Length > 0 || currentRow.Count > 0)
+            {
+                currentRow.Add(currentField.ToString());
+                rows.Add(currentRow.ToArray());
+            }
+            
+            return rows;
+        }
+
+        private decimal? GetDecimalValue(string[] columns, Dictionary<string, int> columnMap, string columnName)
+        {
+            try
+            {
+                if (columnMap.ContainsKey(columnName))
+                {
+                    int index = columnMap[columnName];
+                    if (index < columns.Length)
+                    {
+                        string value = columns[index].Trim();
+                        
+                        if (string.IsNullOrWhiteSpace(value) || 
+                            value == "\\N" || 
+                            value == "\\\\N" ||
+                            value.Equals("NULL", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return null;
+                        }
+                        
+                        if (decimal.TryParse(value, out decimal result))
+                        {
+                            return result;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[WARNING] Cannot parse '{columnName}' value: '{value}'");
+                            return null;
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[WARNING] Column '{columnName}' not found in CSV");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] GetDecimalValue for '{columnName}': {ex.Message}");
+            }
+            
+            return null;
+        }
+
+        [STAThread]
+        static void Main()
+        {
+            Console.WriteLine("=========================================");
+            Console.WriteLine("  Vision Monitor - Yield Analysis System");
+            Console.WriteLine("  Features: Yield Analysis + CSV Import");
+            Console.WriteLine($"  Started: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine("=========================================");
+            Console.WriteLine();
+            
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new NumericAdjusterForm());
+            
+            Console.WriteLine();
+            Console.WriteLine("=========================================");
+            Console.WriteLine("  Program Terminated");
+            Console.WriteLine($"  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine("=========================================");
+        }
+    }
+}
